@@ -31,3 +31,21 @@ artifacts:
 
 evaluation:
   repetitions: 5
+
+
+selection_model:
+  provider: ollama
+  base_url: http://localhost:11434
+  small_model: qwen2.5:3b-instruct
+  large_model: qwen2.5:14b-instruct
+  llm_timeout_seconds: 30.0
+  candidate_limit: 20
+  ranking_batch_size: 10
+  max_output_tokens: 1000
+  max_prompt_chars: 12000
+  context_tokens: 8192
+  temperature: 0.0
+  seed: 0
+  cache_enabled: false
+  fallback_strategy: deterministic
+  log_level: INFO
