@@ -52,3 +52,14 @@ Model-level guards added in `models.py` (derived from existing contract rules):
 confirmed findings and any finding with a severity must have `evidence_paths`; header
 names that look credential-bearing are rejected; auth profile and identity references
 must be identifier-shaped; `RankedCandidate.reasons` must be non-empty.
+## D-013: Experimental RESTler replay-log importer
+
+**Status:** Proposed — pending team review
+
+1. Milestone 2a adds an offline importer for RESTler replay-log text into existing `CandidateSequence` models. It does not start RESTler or perform network requests.
+2. The supported input is replay-log text only. Network logs, trace databases, and RESTler grammar files are out of scope.
+3. Imported sequences are experimental. Synthetic fixtures test parser behavior, but real captured replay-log compatibility remains unverified.
+4. Credential-bearing headers are rejected by default. Mapping them to an existing configured authentication profile is an explicit opt-in; captured credential values must not be retained.
+5. Importing historical replay sequences validates pipeline integration only. It does not demonstrate improved fuzzing effectiveness.
+6. This milestone does not complete real RESTler execution or baseline benchmarking. Those remain separate milestones.
+7. No shared model or public contract changes are authorized by this decision. Any such changes require agreement from both contributors and corresponding documentation and tests.
