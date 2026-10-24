@@ -1,0 +1,33 @@
+project:
+  name: adaptive-restler-planner
+  environment: development
+
+planner:
+  provider: mock
+  fallback_enabled: true
+  max_retries: 1
+  timeout_seconds: 30
+  max_output_tokens: 1000
+
+scoring:
+  request_weight: 0.35
+  execution_time_weight: 0.35
+  planner_latency_weight: 0.20
+  inference_cost_weight: 0.10
+  epsilon: 0.000001
+
+budget:
+  max_requests: 100
+  max_runtime_seconds: 300
+  request_timeout_seconds: 10
+
+execution:
+  mode: dry_run
+  require_target_allowlist: true
+
+artifacts:
+  output_dir: artifacts
+  format: jsonl
+
+evaluation:
+  repetitions: 5

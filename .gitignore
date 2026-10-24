@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Test and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Editors and operating system
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local databases and experiment output
+*.db
+*.sqlite
+*.sqlite3
+artifacts/*
+!artifacts/.gitkeep
+
+# Model caches and downloaded weights
+.cache/
+models/
+checkpoints/
