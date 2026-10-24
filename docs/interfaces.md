@@ -1,6 +1,6 @@
 # Shared Interfaces and Contracts
 
-**Contract version:** 1.0  
+**Contract version:** 1.1  
 **Status:** Proposed implementation baseline, to be frozen before parallel coding  
 **Owners:** Person A — Adaptive Planner; Person B — Execution and Evaluation
 
@@ -205,6 +205,7 @@ Represents a security observation and its validation state.
 | `severity` | `Literal["informational", "low", "medium", "high", "critical"] \| None` | No | Human-reviewed severity |
 | `evidence_paths` | `list[str]` | No | Supporting evidence references; default empty |
 | `validation_notes` | `str` | Yes | Rationale and review notes |
+| `fingerprint` | `str \| None` | No | Stable issue fingerprint set by the validator; default `None` (v1.1) |
 
 Rules:
 - The validator owns the initial finding classification.
@@ -488,6 +489,16 @@ This includes:
 - `TargetConfig`
 - `ExperimentContext`
 - `RankedCandidate`
+- `PlannerContext`
+- `ScoringConfig`
+- `CandidateOutcomeSummary`
+- `PlannerHistory`
+- `BudgetState`
+- `ValidationContext`
+- `BenchmarkConfig`
+- `BenchmarkReport`
+
+(`AssessmentProvider` is a Protocol, not a persisted model; it lives in `planner/provider.py`.)
 
 `planner/schemas.py` may define provider-specific response parsing or import/re-export shared models, but it must not create duplicate competing definitions of these shared models.
 
@@ -512,12 +523,17 @@ Required fields:
 - `planner_latency_weight: float`
 - `inference_cost_weight: float`
 - `epsilon: float`
+- `request_budget: float` (v1.1)
+- `execution_time_budget_seconds: float` (v1.1)
+- `planner_latency_budget_seconds: float` (v1.1)
+- `inference_cost_budget: float | None` (v1.1)
 
 Rules:
 - Weights must be non-negative and sum to 1 within a small numeric tolerance.
 - Epsilon must be positive.
 - Invalid configurations must fail before ranking begins.
 - Missing cost components require documented renormalization.
+- The four `*_budget` fields are the denominators of the normalized cost formula. The orchestration layer fills `request_budget` and `execution_time_budget_seconds` from `ExecutionBudget` (`max_requests`, `max_runtime_seconds`). If `inference_cost_budget` is `None`, the inference component is omitted and the remaining weights are renormalized.
 
 ### 11.4 `PlannerHistory`
 
