@@ -28,3 +28,27 @@ The team agrees to the following rules:
 ### Repository baseline
 
 Both feature branches must be created from the same `main` commit containing this decision and `docs/interfaces.md`. Each contributor must confirm their branch is up to date with that baseline before starting implementation.
+
+
+## D-012: Contract v1.1 amendments
+
+**Status:** AGREED (Person A and Person B)
+
+Changes to `docs/interfaces.md`:
+
+1. `ScoringConfig` gains `request_budget`, `execution_time_budget_seconds`,
+   `planner_latency_budget_seconds` and `inference_cost_budget` (optional).
+   Reason: `rank_candidates` takes no `ExecutionBudget`, so cost normalization had no
+   denominators. The `rank_candidates` signature is unchanged.
+2. `Finding` gains optional `fingerprint`, set by the validator. If it is `None`, the
+   planner falls back to `category + candidate_id`. Reason: `PlannerHistory` stores
+   fingerprints but `Finding` had no source for them.
+3. All supporting models (Sections 11.2-11.8) live in `src/adaptive_restler/models.py`.
+4. `pydantic` moves from the dev extras to runtime dependencies.
+5. `docs/implementation_plan.md` still shows older function signatures. `interfaces.md`
+   is authoritative (D-011).
+
+Model-level guards added in `models.py` (derived from existing contract rules):
+confirmed findings and any finding with a severity must have `evidence_paths`; header
+names that look credential-bearing are rejected; auth profile and identity references
+must be identifier-shaped; `RankedCandidate.reasons` must be non-empty.
