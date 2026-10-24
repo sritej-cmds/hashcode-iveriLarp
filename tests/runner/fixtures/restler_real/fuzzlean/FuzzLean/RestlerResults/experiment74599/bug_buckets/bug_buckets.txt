@@ -1,0 +1,31 @@
+InvalidValueChecker_500: 1
+InvalidDynamicObjectChecker_20x: 2
+PayloadBodyChecker_500: 1
+UseAfterFreeChecker_500: 1
+Total Buckets: 5
+-------------
+InvalidValueChecker_500 - Bug was reproduced - InvalidValueChecker_500_1.replay.txt
+Hash: InvalidValueChecker_500_5f9bb084cbb3a2529b26bf690142685a65bd355b
+GET /api/blog/posts?page=1&per_page=1 HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nauthentication_token_tag\r\n
+--------------------------------------------------------------------------------
+InvalidDynamicObjectChecker_20x - Bug was reproduced - InvalidDynamicObjectChecker_20x_1.replay.txt
+Hash: InvalidDynamicObjectChecker_20x_080f3c85aec4b427307e03c004ffe30a9e899238
+POST /api/blog/posts HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Type: application/json\r\nauthentication_token_tag\r\n{\n    "id":1,\n    "body":fuzzstring}\r\n
+GET /api/blog/posts/_READER_DELIM_api_blog_posts_post_id_READER_DELIM HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nauthentication_token_tag\r\n
+--------------------------------------------------------------------------------
+InvalidDynamicObjectChecker_20x - Bug was reproduced - InvalidDynamicObjectChecker_20x_2.replay.txt
+Hash: InvalidDynamicObjectChecker_20x_82a38edf44e1613514ac1ad0303a4efabdbbb47d
+POST /api/blog/posts HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Type: application/json\r\nauthentication_token_tag\r\n{\n    "id":1,\n    "body":fuzzstring}\r\n
+PUT /api/blog/posts/_READER_DELIM_api_blog_posts_post_id_READER_DELIM HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Type: application/json\r\nauthentication_token_tag\r\n{\n    "id":_READER_DELIM_api_blog_posts_post_id_READER_DELIM,\n    "body":_READER_DELIM_api_blog_posts_post_body_READER_DELIM,\n    "checksum":fuzzstring}\r\n
+--------------------------------------------------------------------------------
+PayloadBodyChecker_500 - Bug was reproduced - PayloadBodyChecker_500_1.replay.txt
+Hash: PayloadBodyChecker_500_e85ef29a919c4d5b6c42c62c0c5d147f932717a1
+POST /api/blog/posts HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Type: application/json\r\nauthentication_token_tag\r\n{\n    "id":1,\n    "body":fuzzstring}\r\n
+PUT /api/blog/posts/_READER_DELIM_api_blog_posts_post_id_READER_DELIM HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Type: application/json\r\nauthentication_token_tag\r\n{"body":"_READER_DELIM_api_blog_posts_post_body_READER_DELIM"}
+--------------------------------------------------------------------------------
+UseAfterFreeChecker_500 - Bug was reproduced - UseAfterFreeChecker_500_1.replay.txt
+Hash: UseAfterFreeChecker_500_080f3c85aec4b427307e03c004ffe30a9e899238
+POST /api/blog/posts HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Type: application/json\r\nauthentication_token_tag\r\n{\n    "id":1,\n    "body":fuzzstring}\r\n
+DELETE /api/blog/posts/_READER_DELIM_api_blog_posts_post_id_READER_DELIM HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nauthentication_token_tag\r\n
+GET /api/blog/posts/_READER_DELIM_api_blog_posts_post_id_READER_DELIM HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nauthentication_token_tag\r\n
+--------------------------------------------------------------------------------

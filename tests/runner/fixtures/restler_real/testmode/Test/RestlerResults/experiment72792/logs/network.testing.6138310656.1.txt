@@ -1,0 +1,293 @@
+
+Generation-1: Rendering Sequence-1
+
+	Request: 1 (Remaining candidate combinations: 2)
+	Request hash: 1950cbddab7726489624c3d346d3426561c921ad
+
+		- restler_static_string: 'GET '
+		- restler_static_string: ''
+		- restler_static_string: '/'
+		- restler_static_string: 'api'
+		- restler_static_string: '/'
+		- restler_static_string: 'blog'
+		- restler_static_string: '/'
+		- restler_static_string: 'posts'
+		- restler_static_string: '?'
+		- restler_static_string: 'page='
+		- restler_fuzzable_int: '1'
+		- restler_static_string: '&'
+		- restler_static_string: 'per_page='
+		- restler_fuzzable_int: '1'
+		- restler_static_string: ' HTTP/1.1\r\n'
+		- restler_static_string: 'Accept: application/json\r\n'
+		- restler_static_string: 'Host: localhost:8899\r\n'
+		+ restler_refreshable_authentication_token: [token_auth_method, token_refresh_interval, ...]
+		- restler_static_string: '\r\n'
+
+2026-10-25 01:09:34.748: Sending: 'GET /api/blog/posts?page=1&per_page=1 HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Length: 0\r\nUser-Agent: restler/9.3.1\r\nx-restler-sequence-id: a60be7f0-dc0e-4962-80ed-d69831aba7ec\r\n\r\n'
+
+2026-10-25 01:09:34.749: Received: 'HTTP/1.1 400 Bad Request\r\ndate: Sat, 24 Oct 2026 19:39:33 GMT\r\nserver: uvicorn\r\ncontent-length: 41\r\ncontent-type: application/json\r\n\r\n{"detail":"per_page must be at least 2."}'
+
+
+Generation-1: Rendering Sequence-1
+
+	Request: 1 (Remaining candidate combinations: 1)
+	Request hash: 1950cbddab7726489624c3d346d3426561c921ad
+
+		- restler_static_string: 'GET '
+		- restler_static_string: ''
+		- restler_static_string: '/'
+		- restler_static_string: 'api'
+		- restler_static_string: '/'
+		- restler_static_string: 'blog'
+		- restler_static_string: '/'
+		- restler_static_string: 'posts'
+		- restler_static_string: '?'
+		- restler_static_string: 'page='
+		- restler_fuzzable_int: '1'
+		- restler_static_string: '&'
+		- restler_static_string: 'per_page='
+		- restler_fuzzable_int: '1'
+		- restler_static_string: ' HTTP/1.1\r\n'
+		- restler_static_string: 'Accept: application/json\r\n'
+		- restler_static_string: 'Host: localhost:8899\r\n'
+		+ restler_refreshable_authentication_token: [token_auth_method, token_refresh_interval, ...]
+		- restler_static_string: '\r\n'
+
+2026-10-25 01:09:34.750: Sending: 'GET /api/blog/posts HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Length: 0\r\nUser-Agent: restler/9.3.1\r\nx-restler-sequence-id: db59737f-274d-4a8d-9396-501c5f47e2d3\r\n\r\n'
+
+2026-10-25 01:09:34.751: Received: 'HTTP/1.1 200 OK\r\ndate: Sat, 24 Oct 2026 19:39:33 GMT\r\nserver: uvicorn\r\ncontent-length: 45\r\ncontent-type: application/json\r\n\r\n{"items":[],"per_page":5,"page":10,"total":0}'
+
+
+Generation-1: Rendering Sequence-2
+
+	Request: 1 (Remaining candidate combinations: 8)
+	Request hash: 4fc287fccdb64d22a7d070386dacdde9207540d0
+
+		- restler_static_string: 'POST '
+		- restler_static_string: ''
+		- restler_static_string: '/'
+		- restler_static_string: 'api'
+		- restler_static_string: '/'
+		- restler_static_string: 'blog'
+		- restler_static_string: '/'
+		- restler_static_string: 'posts'
+		- restler_static_string: ' HTTP/1.1\r\n'
+		- restler_static_string: 'Accept: application/json\r\n'
+		- restler_static_string: 'Host: localhost:8899\r\n'
+		- restler_static_string: 'Content-Type: '
+		- restler_static_string: 'application/json'
+		- restler_static_string: '\r\n'
+		+ restler_refreshable_authentication_token: [token_auth_method, token_refresh_interval, ...]
+		- restler_static_string: '\r\n'
+		- restler_static_string: '{'
+		- restler_static_string: '\n    "id":'
+		+ restler_fuzzable_int: [99, 1, ...]
+		- restler_static_string: ',\n    "body":'
+		+ restler_fuzzable_string: ["my first blog post", "fuzzstring", ...]
+		- restler_static_string: '}'
+		- restler_static_string: '\r\n'
+
+2026-10-25 01:09:34.752: Sending: 'POST /api/blog/posts HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Type: application/json\r\nContent-Length: 49\r\nUser-Agent: restler/9.3.1\r\nx-restler-sequence-id: bdb2dc7a-a01c-4572-922c-59c69c951011\r\n\r\n{\n    "id":99,\n    "body":"my first blog post"}\r\n'
+
+2026-10-25 01:09:34.756: Received: 'HTTP/1.1 201 Created\r\ndate: Sat, 24 Oct 2026 19:39:33 GMT\r\nserver: uvicorn\r\ncontent-length: 38\r\ncontent-type: application/json\r\n\r\n{"id":345,"body":"my first blog post"}'
+
+
+Generation-1: Rendering Sequence-3
+
+	Request: 1 (Remaining candidate combinations: 2)
+	Request hash: b6c2efcdc1799e1e6a48374d29a3c2b594bea52c
+
+		- restler_static_string: 'GET '
+		- restler_static_string: ''
+		- restler_static_string: '/'
+		- restler_static_string: 'api'
+		- restler_static_string: '/'
+		- restler_static_string: 'doc'
+		- restler_static_string: ' HTTP/1.1\r\n'
+		- restler_static_string: 'Accept: application/json\r\n'
+		- restler_static_string: 'Host: localhost:8899\r\n'
+		+ restler_refreshable_authentication_token: [token_auth_method, token_refresh_interval, ...]
+		- restler_static_string: '\r\n'
+
+2026-10-25 01:09:34.758: Sending: 'GET /api/doc HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Length: 0\r\nUser-Agent: restler/9.3.1\r\nx-restler-sequence-id: 30e924a8-2c16-475a-b6de-13c9aa9ec4d8\r\n\r\n'
+
+2026-10-25 01:09:34.758: Received: 'HTTP/1.1 200 OK\r\ndate: Sat, 24 Oct 2026 19:39:33 GMT\r\nserver: uvicorn\r\ncontent-length: 30\r\ncontent-type: application/json\r\n\r\n{"message":"this is the docs"}'
+
+
+Generation-2: Rendering Sequence-1
+
+	Request: 1 (Current combination: 1 / 8)
+		- restler_static_string: 'POST '
+		- restler_static_string: ''
+		- restler_static_string: '/'
+		- restler_static_string: 'api'
+		- restler_static_string: '/'
+		- restler_static_string: 'blog'
+		- restler_static_string: '/'
+		- restler_static_string: 'posts'
+		- restler_static_string: ' HTTP/1.1\r\n'
+		- restler_static_string: 'Accept: application/json\r\n'
+		- restler_static_string: 'Host: localhost:8899\r\n'
+		- restler_static_string: 'Content-Type: '
+		- restler_static_string: 'application/json'
+		- restler_static_string: '\r\n'
+		+ restler_refreshable_authentication_token: [token_auth_method, token_refresh_interval, ...]
+		- restler_static_string: '\r\n'
+		- restler_static_string: '{'
+		- restler_static_string: '\n    "id":'
+		+ restler_fuzzable_int: [99, 1, ...]
+		- restler_static_string: ',\n    "body":'
+		+ restler_fuzzable_string: ["my first blog post", "fuzzstring", ...]
+		- restler_static_string: '}'
+		- restler_static_string: '\r\n'
+
+	Request: 2 (Remaining candidate combinations: 2)
+	Request hash: 3cdc49380f5bafe726c625d93ca3d38d271808f5
+
+		- restler_static_string: 'GET '
+		- restler_static_string: ''
+		- restler_static_string: '/'
+		- restler_static_string: 'api'
+		- restler_static_string: '/'
+		- restler_static_string: 'blog'
+		- restler_static_string: '/'
+		- restler_static_string: 'posts'
+		- restler_static_string: '/'
+		- restler_static_string: '_READER_DELIM_api_blog_posts_post_id_READER_DELIM'
+		- restler_static_string: ' HTTP/1.1\r\n'
+		- restler_static_string: 'Accept: application/json\r\n'
+		- restler_static_string: 'Host: localhost:8899\r\n'
+		+ restler_refreshable_authentication_token: [token_auth_method, token_refresh_interval, ...]
+		- restler_static_string: '\r\n'
+
+2026-10-25 01:09:34.760: Sending: 'POST /api/blog/posts HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Type: application/json\r\nContent-Length: 49\r\nUser-Agent: restler/9.3.1\r\nx-restler-sequence-id: 9e56ce06-4b52-4e11-bcf6-a106834ebd7f\r\n\r\n{\n    "id":99,\n    "body":"my first blog post"}\r\n'
+
+2026-10-25 01:09:34.762: Received: 'HTTP/1.1 201 Created\r\ndate: Sat, 24 Oct 2026 19:39:33 GMT\r\nserver: uvicorn\r\ncontent-length: 38\r\ncontent-type: application/json\r\n\r\n{"id":346,"body":"my first blog post"}'
+
+2026-10-25 01:09:34.762: Sending: 'GET /api/blog/posts/346 HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Length: 0\r\nUser-Agent: restler/9.3.1\r\nx-restler-sequence-id: 9e56ce06-4b52-4e11-bcf6-a106834ebd7f\r\n\r\n'
+
+2026-10-25 01:09:34.763: Received: 'HTTP/1.1 200 OK\r\ndate: Sat, 24 Oct 2026 19:39:33 GMT\r\nserver: uvicorn\r\ncontent-length: 38\r\ncontent-type: application/json\r\n\r\n{"id":346,"body":"my first blog post"}'
+
+
+Generation-2: Rendering Sequence-2
+
+	Request: 1 (Current combination: 1 / 8)
+		- restler_static_string: 'POST '
+		- restler_static_string: ''
+		- restler_static_string: '/'
+		- restler_static_string: 'api'
+		- restler_static_string: '/'
+		- restler_static_string: 'blog'
+		- restler_static_string: '/'
+		- restler_static_string: 'posts'
+		- restler_static_string: ' HTTP/1.1\r\n'
+		- restler_static_string: 'Accept: application/json\r\n'
+		- restler_static_string: 'Host: localhost:8899\r\n'
+		- restler_static_string: 'Content-Type: '
+		- restler_static_string: 'application/json'
+		- restler_static_string: '\r\n'
+		+ restler_refreshable_authentication_token: [token_auth_method, token_refresh_interval, ...]
+		- restler_static_string: '\r\n'
+		- restler_static_string: '{'
+		- restler_static_string: '\n    "id":'
+		+ restler_fuzzable_int: [99, 1, ...]
+		- restler_static_string: ',\n    "body":'
+		+ restler_fuzzable_string: ["my first blog post", "fuzzstring", ...]
+		- restler_static_string: '}'
+		- restler_static_string: '\r\n'
+
+	Request: 2 (Remaining candidate combinations: 3)
+	Request hash: 67e6114625784b6f417b8bf1b54f2785f3877ab6
+
+		- restler_static_string: 'PUT '
+		- restler_static_string: ''
+		- restler_static_string: '/'
+		- restler_static_string: 'api'
+		- restler_static_string: '/'
+		- restler_static_string: 'blog'
+		- restler_static_string: '/'
+		- restler_static_string: 'posts'
+		- restler_static_string: '/'
+		- restler_static_string: '_READER_DELIM_api_blog_posts_post_id_READER_DELIM'
+		- restler_static_string: ' HTTP/1.1\r\n'
+		- restler_static_string: 'Accept: application/json\r\n'
+		- restler_static_string: 'Host: localhost:8899\r\n'
+		- restler_static_string: 'Content-Type: '
+		- restler_static_string: 'application/json'
+		- restler_static_string: '\r\n'
+		+ restler_refreshable_authentication_token: [token_auth_method, token_refresh_interval, ...]
+		- restler_static_string: '\r\n'
+		- restler_static_string: '{'
+		- restler_static_string: '\n    "id":'
+		- restler_static_string: '_READER_DELIM_api_blog_posts_post_id_READER_DELIM'
+		- restler_static_string: ',\n    "body":'
+		- restler_static_string: '"_READER_DELIM_api_blog_posts_post_body_READER_DELIM"'
+		- restler_static_string: ',\n    "checksum":'
+		+ restler_fuzzable_string: ["abcde", "fuzzstring", ...]
+		- restler_static_string: '}'
+		- restler_static_string: '\r\n'
+
+2026-10-25 01:09:34.766: Sending: 'POST /api/blog/posts HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Type: application/json\r\nContent-Length: 49\r\nUser-Agent: restler/9.3.1\r\nx-restler-sequence-id: ec0d0deb-89fb-4896-bc54-b1990f6f0c31\r\n\r\n{\n    "id":99,\n    "body":"my first blog post"}\r\n'
+
+2026-10-25 01:09:34.767: Received: 'HTTP/1.1 201 Created\r\ndate: Sat, 24 Oct 2026 19:39:33 GMT\r\nserver: uvicorn\r\ncontent-length: 38\r\ncontent-type: application/json\r\n\r\n{"id":347,"body":"my first blog post"}'
+
+2026-10-25 01:09:34.767: Sending: 'PUT /api/blog/posts/347 HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Type: application/json\r\nContent-Length: 74\r\nUser-Agent: restler/9.3.1\r\nx-restler-sequence-id: ec0d0deb-89fb-4896-bc54-b1990f6f0c31\r\n\r\n{\n    "id":347,\n    "body":"my first blog post",\n    "checksum":"abcde"}\r\n'
+
+2026-10-25 01:09:34.768: Received: 'HTTP/1.1 204 No Content\r\ndate: Sat, 24 Oct 2026 19:39:33 GMT\r\nserver: uvicorn\r\n\r\n'
+
+
+Generation-2: Rendering Sequence-3
+
+	Request: 1 (Current combination: 1 / 8)
+		- restler_static_string: 'POST '
+		- restler_static_string: ''
+		- restler_static_string: '/'
+		- restler_static_string: 'api'
+		- restler_static_string: '/'
+		- restler_static_string: 'blog'
+		- restler_static_string: '/'
+		- restler_static_string: 'posts'
+		- restler_static_string: ' HTTP/1.1\r\n'
+		- restler_static_string: 'Accept: application/json\r\n'
+		- restler_static_string: 'Host: localhost:8899\r\n'
+		- restler_static_string: 'Content-Type: '
+		- restler_static_string: 'application/json'
+		- restler_static_string: '\r\n'
+		+ restler_refreshable_authentication_token: [token_auth_method, token_refresh_interval, ...]
+		- restler_static_string: '\r\n'
+		- restler_static_string: '{'
+		- restler_static_string: '\n    "id":'
+		+ restler_fuzzable_int: [99, 1, ...]
+		- restler_static_string: ',\n    "body":'
+		+ restler_fuzzable_string: ["my first blog post", "fuzzstring", ...]
+		- restler_static_string: '}'
+		- restler_static_string: '\r\n'
+
+	Request: 2 (Remaining candidate combinations: 2)
+	Request hash: 78e06fccfed50bd52918df57068206e977b23d96
+
+		- restler_static_string: 'DELETE '
+		- restler_static_string: ''
+		- restler_static_string: '/'
+		- restler_static_string: 'api'
+		- restler_static_string: '/'
+		- restler_static_string: 'blog'
+		- restler_static_string: '/'
+		- restler_static_string: 'posts'
+		- restler_static_string: '/'
+		- restler_static_string: '_READER_DELIM_api_blog_posts_post_id_READER_DELIM'
+		- restler_static_string: ' HTTP/1.1\r\n'
+		- restler_static_string: 'Accept: application/json\r\n'
+		- restler_static_string: 'Host: localhost:8899\r\n'
+		+ restler_refreshable_authentication_token: [token_auth_method, token_refresh_interval, ...]
+		- restler_static_string: '\r\n'
+
+2026-10-25 01:09:34.771: Sending: 'POST /api/blog/posts HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Type: application/json\r\nContent-Length: 49\r\nUser-Agent: restler/9.3.1\r\nx-restler-sequence-id: 727c0b17-2514-4d94-8114-4f4ec06989bd\r\n\r\n{\n    "id":99,\n    "body":"my first blog post"}\r\n'
+
+2026-10-25 01:09:34.772: Received: 'HTTP/1.1 201 Created\r\ndate: Sat, 24 Oct 2026 19:39:33 GMT\r\nserver: uvicorn\r\ncontent-length: 38\r\ncontent-type: application/json\r\n\r\n{"id":348,"body":"my first blog post"}'
+
+2026-10-25 01:09:34.772: Sending: 'DELETE /api/blog/posts/348 HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8899\r\nContent-Length: 0\r\nUser-Agent: restler/9.3.1\r\nx-restler-sequence-id: 727c0b17-2514-4d94-8114-4f4ec06989bd\r\n\r\n'
+
+2026-10-25 01:09:34.774: Received: 'HTTP/1.1 204 No Content\r\ndate: Sat, 24 Oct 2026 19:39:33 GMT\r\nserver: uvicorn\r\n\r\n'
+
