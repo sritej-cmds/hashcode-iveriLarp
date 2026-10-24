@@ -1,19 +1,19 @@
 """Deterministic request/time budget accounting.
 
 Enforced in plain code. The LLM never sees or modifies these limits.
-This is a runtime tracker, not a shared persisted model. The persisted
-`ExecutionBudget` in models.py (see docs/interfaces.md) supplies the limits.
 """
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Callable, Optional
+
+from adaptive_restler.models import BudgetState, ExecutionBudget
 
 REASON_REQUEST_LIMIT = "request_limit"
 REASON_TIME_LIMIT = "time_limit"
-
 
 class BudgetExceededError(Exception):
     """Raised when an action would exceed, or already exceeds, the budget."""
@@ -93,3 +93,30 @@ class BudgetTracker:
             "elapsed_seconds": round(self.elapsed_seconds, 6),
             "exhausted_reason": self.exhausted_reason(),
         }
+    # --- Helpers operating on the shared, runner-owned BudgetState (models.py) ---
+
+
+def elapsed_runtime(state: BudgetState, now: datetime) -> float:
+    return max(0.0, (now - state.started_at).total_seconds())
+
+
+def check_limits(
+    state: BudgetState, budget: ExecutionBudget, now: datetime
+) -> Optional[str]:
+    """Return a stop reason if a limit is reached, else None."""
+    if state.requests_used >= budget.max_requests:
+        return REASON_REQUEST_LIMIT
+    if elapsed_runtime(state, now) >= budget.max_runtime_seconds:
+        return REASON_TIME_LIMIT
+    return None
+
+
+def record_dispatch(
+    state: BudgetState, budget: ExecutionBudget, count: int = 1
+) -> None:
+    """Record dispatched requests. Never exceeds the limit or goes negative."""
+    if count < 0:
+        raise ValueError("count must be >= 0")
+    if state.requests_used + count > budget.max_requests:
+        raise BudgetExceededError(REASON_REQUEST_LIMIT)
+    state.requests_used += count
