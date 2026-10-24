@@ -187,7 +187,7 @@ def test_bad_provider_metadata_is_a_caller_bug(kw):
         ("", "invalid_json"),
         ('{"assessments": [', "invalid_json"),
         (b"\xff\xfe\x00bad", "invalid_json"),
-        ("[" * 100_000, "invalid_json"),
+        pytest.param("[" * 100_000, "invalid_json", id="deeply_nested_brackets"),
         ("[]", "invalid_structure"),
         ('"text"', "invalid_structure"),
         ("{}", "invalid_structure"),
