@@ -134,13 +134,17 @@ def render_markdown(report: BenchmarkReport) -> str:
     return "\n".join(lines)
 
 
-def generate_report(config: BenchmarkConfig, run_ids: list[str]) -> BenchmarkReport:
+def generate_report(
+    config: BenchmarkConfig,
+    run_ids: list[str],
+    extra_errors: list[str] | None = None,
+) -> BenchmarkReport:
     """Build and write report.json, report.md and config.json.
 
     A write failure never raises: raw run artifacts are untouched and the
     failure is recorded in `errors`.
     """
-    report = build_report(config, run_ids)
+    report = build_report(config, run_ids, extra_errors)
     try:
         directory = artifact_dir(config.artifact_root, config.benchmark_id)
         write_json_artifact(
