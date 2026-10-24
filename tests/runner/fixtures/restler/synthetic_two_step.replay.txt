@@ -1,0 +1,11 @@
+# SYNTHETIC FIXTURE: hand-written from RESTler's documented replay-log format. NOT a real RESTler capture.
+# Illustrative only; values are invented.
+-> POST /api/blog/posts HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8888\r\nContent-Type: application/json\r\n\r\n{\n    "id":0,\n    "body":"fuzzstring"}\r\n
+! producer_timing_delay 0
+! max_async_wait_time 0
+PREVIOUS RESPONSE: 'HTTP/1.1 201 CREATED\r\nContent-Type: application/json\r\n\r\n{\n    "id": 5875\n}\n'
+
+-> PUT /api/blog/posts/5875 HTTP/1.1\r\nAccept: application/json\r\nHost: localhost:8888\r\nContent-Type: application/json\r\n\r\n{"body":"fuzzstring"}
+! producer_timing_delay 0
+! max_async_wait_time 0
+PREVIOUS RESPONSE: 'HTTP/1.1 500 INTERNAL SERVER ERROR\r\nContent-Type: application/json\r\n\r\n{}'

@@ -65,3 +65,6 @@ The project is currently in the setup stage. Installation and execution instruct
 ## Team workflow
 
 The two contributors share responsibility for architecture, interface agreements, code review, integration, and the final evaluation. See `docs/IMPLEMENTATION_PLAN.md` for the proposed work split.
+
+## RESTler baseline and end-to-end replay
+See `docs/restler_baseline.md` for exact setup, commands and observed results (local demo server, pipeline validation only).
