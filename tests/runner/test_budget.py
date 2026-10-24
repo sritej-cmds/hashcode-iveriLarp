@@ -4,7 +4,7 @@ from adaptive_restler.runner.budget import (
     REASON_REQUEST_LIMIT,
     REASON_TIME_LIMIT,
     BudgetExceededError,
-    BudgetState,
+    BudgetTracker,
 )
 
 
@@ -21,7 +21,7 @@ class FakeClock:
 
 def make(max_requests=10, max_seconds=60.0):
     clock = FakeClock()
-    return BudgetState(max_requests, max_seconds, clock=clock), clock
+    return BudgetTracker(max_requests, max_seconds, clock=clock), clock
 
 
 def test_fresh_budget_not_exhausted():
@@ -81,9 +81,9 @@ def test_zero_budget_is_immediately_exhausted():
 
 def test_negative_inputs_rejected():
     with pytest.raises(ValueError):
-        BudgetState(-1, 10.0)
+        BudgetTracker(-1, 10.0)
     with pytest.raises(ValueError):
-        BudgetState(1, -1.0)
+        BudgetTracker(1, -1.0)
     b, _ = make()
     with pytest.raises(ValueError):
         b.consume_requests(-1)

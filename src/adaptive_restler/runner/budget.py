@@ -24,7 +24,7 @@ class BudgetExceededError(Exception):
 
 
 @dataclass
-class BudgetState:
+class BudgetTracker:
     max_requests: int
     max_seconds: float
     clock: Callable[[], float] = time.monotonic
