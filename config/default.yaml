@@ -36,8 +36,8 @@ evaluation:
 selection_model:
   provider: ollama
   base_url: http://localhost:11434
-  small_model: qwen2.5:3b-instruct
-  large_model: qwen2.5:14b-instruct
+  small_model: qwen2.5:3b
+  large_model: qwen2.5:7b
   llm_timeout_seconds: 30.0
   candidate_limit: 20
   ranking_batch_size: 10

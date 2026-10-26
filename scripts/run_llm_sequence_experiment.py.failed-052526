@@ -1,0 +1,972 @@
+#!/usr/bin/env python3
+"""Run a bounded Qwen 3B -> Qwen 7B sequence-selection experiment against local crAPI via RESTler replay.
+
+This is a first working sequence-level prototype: models draft/verify concrete ordered
+sequences; RESTler replays them. It intentionally excludes OpenAPI paths with path
+parameters because replay logs do not substitute response-derived IDs at runtime.
+Only loopback targets are permitted.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import secrets
+import shlex
+import socket
+import subprocess
+import sys
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlencode, urlsplit
+
+ROOT = Path.cwd().resolve()
+for candidate in [Path(__file__).resolve().parent.parent, *Path.cwd().resolve().parents]:
+    if (candidate / "src" / "adaptive_restler" / "selection" / "provider.py").is_file():
+        ROOT = candidate
+        break
+sys.path.insert(0, str(ROOT / "src"))
+
+try:
+    from adaptive_restler.selection.provider import OllamaProvider
+except Exception as exc:  # fail with an actionable message rather than a noisy import trace
+    raise SystemExit(
+        "Cannot import project OllamaProvider. Run this script from your repo root "
+        "with the project environment active, or place it under scripts/."
+    ) from None
+
+ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+SKIP_PATHS = {"workshop/api/shop/return_qr_code"}  # binary image endpoint caused RESTler decode errors
+
+
+def resolve_schema(schema: Any, spec: dict[str, Any], depth: int = 0) -> dict[str, Any]:
+    if not isinstance(schema, dict) or depth > 8:
+        return {}
+    out = dict(schema)
+    ref = out.pop("$ref", None)
+    if isinstance(ref, str) and ref.startswith("#/components/schemas/"):
+        name = ref.rsplit("/", 1)[-1]
+        component = spec.get("components", {}).get("schemas", {}).get(name, {})
+        resolved = resolve_schema(component, spec, depth + 1)
+        resolved.update(out)
+        out = resolved
+    all_of = out.pop("allOf", None)
+    if isinstance(all_of, list):
+        merged: dict[str, Any] = {}
+        properties: dict[str, Any] = {}
+        required: list[str] = []
+        for part in all_of:
+            piece = resolve_schema(part, spec, depth + 1)
+            merged.update({k: v for k, v in piece.items() if k not in {"properties", "required"}})
+            properties.update(piece.get("properties", {}) if isinstance(piece.get("properties"), dict) else {})
+            required.extend(piece.get("required", []) if isinstance(piece.get("required"), list) else [])
+        if properties:
+            merged["properties"] = properties
+        if required:
+            merged["required"] = sorted(set(required))
+        merged.update(out)
+        out = merged
+    return out
+
+
+def schema_brief(schema: Any, spec: dict[str, Any], depth: int = 0) -> dict[str, Any]:
+    s = resolve_schema(schema, spec)
+    result: dict[str, Any] = {}
+    for key in ("type", "format", "enum", "minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems", "pattern", "example", "default"):
+        if key in s and isinstance(s[key], (str, int, float, bool, list)):
+            result[key] = s[key]
+    if isinstance(s.get("properties"), dict) and depth < 2:
+        result["properties"] = {
+            str(k): schema_brief(v, spec, depth + 1)
+            for k, v in list(s["properties"].items())[:24]
+        }
+    if isinstance(s.get("required"), list):
+        result["required"] = [str(x) for x in s["required"][:24]]
+    if isinstance(s.get("items"), dict) and depth < 2:
+        result["items"] = schema_brief(s["items"], spec, depth + 1)
+    if s.get("additionalProperties") is False:
+        result["additionalProperties"] = False
+    return result
+
+
+def build_catalog(spec: dict[str, Any], max_operations: int, exclude_paths: set[str]) -> list[dict[str, Any]]:
+    paths = spec.get("paths")
+    if not isinstance(paths, dict):
+        raise ValueError("OpenAPI document has no valid paths object")
+    catalog: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for path, path_item in paths.items():
+        if not isinstance(path_item, dict):
+            continue
+        normalized = str(path).strip("/")
+        if normalized in exclude_paths or "{" in str(path) or "}" in str(path):
+            continue  # RESTler replay cannot perform dynamic response-to-path substitution here
+        for method, operation in path_item.items():
+            method = str(method).upper()
+            if method not in ALLOWED_METHODS or not isinstance(operation, dict):
+                continue
+            params: list[dict[str, Any]] = []
+            unsupported = False
+            for p in operation.get("parameters", []) if isinstance(operation.get("parameters", []), list) else []:
+                if not isinstance(p, dict):
+                    continue
+                loc, name = p.get("in"), p.get("name")
+                if not isinstance(name, str) or loc not in {"query", "header"}:
+                    if p.get("required"):
+                        unsupported = True
+                    continue
+                if loc == "header" and name.lower() not in {"accept"}:
+                    if p.get("required"):
+                        unsupported = True
+                    continue
+                params.append({
+                    "name": name,
+                    "in": loc,
+                    "required": bool(p.get("required", False)),
+                    "schema": schema_brief(p.get("schema", {}), spec),
+                    **({"example": p["example"]} if "example" in p else {}),
+                })
+            if unsupported:
+                continue
+            body_schema = None
+            body_required = False
+            request_body = operation.get("requestBody")
+            if isinstance(request_body, dict):
+                content = request_body.get("content", {})
+                media = content.get("application/json") if isinstance(content, dict) else None
+                if media is None:
+                    if request_body.get("required"):
+                        continue
+                else:
+                    body_schema = schema_brief(media.get("schema", {}), spec)
+                    body_required = bool(request_body.get("required", False))
+            op_id = operation.get("operationId")
+            if not isinstance(op_id, str) or not op_id.strip() or op_id in seen_ids:
+                op_id = f"{method.lower()}_{normalized.replace('/', '_') or 'root'}"
+            seen_ids.add(op_id)
+            catalog.append({
+                "key": f"op-{len(catalog) + 1:03d}",
+                "operation_id": op_id,
+                "method": method,
+                "path": "/" + normalized,
+                "summary": str(operation.get("summary") or operation.get("description") or "")[:150],
+                "parameters": params,
+                # Explicit lists prevent the model from confusing body fields or headers with query parameters.
+                "query_parameters": [p["name"] for p in params if p["in"] == "query"],
+                "required_query_parameters": [p["name"] for p in params if p["in"] == "query" and p["required"]],
+                "request_body_required": body_required,
+                "request_body_schema": body_schema,
+            })
+            if len(catalog) >= max_operations:
+                return catalog
+    if len(catalog) < 2:
+        raise ValueError("Fewer than two replay-compatible operations found in this spec")
+    return catalog
+
+
+def parse_json_response(raw: str) -> dict[str, Any]:
+    text = raw.strip()
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I)
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        value, _ = decoder.raw_decode(text)
+    if not isinstance(value, dict):
+        raise ValueError("model output was not a JSON object")
+    return value
+
+
+def matches_type(value: Any, schema: dict[str, Any]) -> bool:
+    typ = schema.get("type")
+    if "enum" in schema and value not in schema["enum"]:
+        return False
+    if typ == "string": return isinstance(value, str)
+    if typ == "integer": return isinstance(value, int) and not isinstance(value, bool)
+    if typ == "number": return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if typ == "boolean": return isinstance(value, bool)
+    if typ == "array": return isinstance(value, list)
+    if typ == "object": return isinstance(value, dict)
+    return True
+
+
+def validate_body(value: Any, schema: dict[str, Any], trail: str = "body") -> None:
+    if not matches_type(value, schema):
+        raise ValueError(f"{trail} has a value incompatible with the OpenAPI schema")
+
+    if isinstance(value, str):
+        min_length = schema.get("minLength")
+        max_length = schema.get("maxLength")
+        if isinstance(min_length, int) and len(value) < min_length:
+            raise ValueError(f"{trail} is shorter than minLength={min_length}")
+        if isinstance(max_length, int) and len(value) > max_length:
+            raise ValueError(f"{trail} exceeds maxLength={max_length}")
+        pattern = schema.get("pattern")
+        if isinstance(pattern, str):
+            try:
+                if re.search(pattern, value) is None:
+                    raise ValueError(f"{trail} does not match its OpenAPI pattern")
+            except re.error:
+                raise ValueError(f"{trail} has an invalid pattern in the supplied OpenAPI schema") from None
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        if isinstance(minimum, (int, float)) and value < minimum:
+            raise ValueError(f"{trail} is below minimum={minimum}")
+        if isinstance(maximum, (int, float)) and value > maximum:
+            raise ValueError(f"{trail} exceeds maximum={maximum}")
+
+    if isinstance(value, dict):
+        required = schema.get("required", [])
+        for key in required if isinstance(required, list) else []:
+            if key not in value:
+                raise ValueError(f"{trail} is missing required property {key}")
+        props = schema.get("properties", {})
+        if isinstance(props, dict):
+            for key, item in value.items():
+                if key not in props and schema.get("additionalProperties") is False:
+                    raise ValueError(f"{trail} contains unknown property {key}")
+                if key in props and isinstance(props[key], dict):
+                    validate_body(item, props[key], f"{trail}.{key}")
+
+    if isinstance(value, list):
+        min_items = schema.get("minItems")
+        max_items = schema.get("maxItems")
+        if isinstance(min_items, int) and len(value) < min_items:
+            raise ValueError(f"{trail} has fewer than minItems={min_items}")
+        if isinstance(max_items, int) and len(value) > max_items:
+            raise ValueError(f"{trail} exceeds maxItems={max_items}")
+        if isinstance(schema.get("items"), dict):
+            for i, item in enumerate(value):
+                validate_body(item, schema["items"], f"{trail}[{i}]")
+
+
+def make_signup_fixture() -> dict[str, str]:
+    """Create a fresh, schema-friendly identity for one candidate sequence."""
+    nonce = uuid.uuid4().hex
+    phone = secrets.choice("6789") + f"{secrets.randbelow(1_000_000_000):09d}"
+    return {
+        "email": f"llm-restler-{nonce[:16]}@example.com",
+        "number": phone,
+        "password": f"R3stler!{nonce[:12]}aA9",
+    }
+
+
+def parse_network_responses(directory: Path) -> list[dict[str, Any]]:
+    """Extract HTTP methods, paths and status codes from RESTler replay network logs."""
+    results: list[dict[str, Any]] = []
+    for path in sorted(directory.rglob("network.replay.*.txt")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        requests = re.findall(r"Sending:\s*'([A-Z]+)\s+(\S+)\s+HTTP/\d\.\d", text)
+        statuses = re.findall(r"Received:\s*'HTTP/\d\.\d\s+(\d{3})", text)
+        for index in range(max(len(requests), len(statuses))):
+            request = requests[index] if index < len(requests) else None
+            status = int(statuses[index]) if index < len(statuses) else None
+            results.append({
+                "method": request[0] if request else None,
+                "path": request[1] if request else None,
+                "status_code": status,
+                "request_response_matched": request is not None and status is not None,
+                "network_log": str(path.relative_to(directory)),
+            })
+    return results
+
+
+def scrub_test_values(directory: Path, values: list[str]) -> None:
+    """Redact synthetic signup credentials from local replay artifacts."""
+    secrets_to_scrub = sorted({v for v in values if isinstance(v, str) and len(v) >= 4}, key=len, reverse=True)
+    if not secrets_to_scrub:
+        return
+    for path in directory.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in {".txt", ".json", ".ndjson", ".log"}:
+            continue
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            for value in secrets_to_scrub:
+                content = content.replace(value, "[REDACTED_TEST_VALUE]")
+            path.write_text(content, encoding="utf-8")
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
+        except OSError:
+            pass
+
+
+def query_constraints_for_candidate(candidate: Any, by_key: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return exact per-step query allow-lists to guide targeted LLM repair."""
+    constraints: list[dict[str, Any]] = []
+    if not isinstance(candidate, dict) or not isinstance(candidate.get("steps"), list):
+        return constraints
+    for index, step in enumerate(candidate["steps"], 1):
+        if not isinstance(step, dict):
+            continue
+        key = step.get("operation_key")
+        op = by_key.get(key) if isinstance(key, str) else None
+        if op is None:
+            constraints.append({"step": index, "operation_key": key, "allowed_query_parameters": [],
+                                "required_query_parameters": [], "note": "unknown operation key; select a catalog key"})
+            continue
+        constraints.append({
+            "step": index,
+            "operation_key": op["key"],
+            "operation_id": op["operation_id"],
+            "allowed_query_parameters": op.get("query_parameters", [p["name"] for p in op["parameters"] if p["in"] == "query"]),
+            "required_query_parameters": op.get("required_query_parameters", [p["name"] for p in op["parameters"] if p["in"] == "query" and p["required"]]),
+        })
+    return constraints
+
+
+def validate_sequence(seq: Any, by_key: dict[str, dict[str, Any]], sequence_index: int, expected_signup_fixture: dict[str, str] | None = None) -> dict[str, Any]:
+    if not isinstance(seq, dict) or not isinstance(seq.get("steps"), list):
+        raise ValueError("sequence must contain a steps array")
+    steps_in = seq["steps"]
+    if not 2 <= len(steps_in) <= 5:
+        raise ValueError("sequence length must be between 2 and 5 requests")
+    steps: list[dict[str, Any]] = []
+    for idx, step in enumerate(steps_in, 1):
+        if not isinstance(step, dict) or not isinstance(step.get("operation_key"), str):
+            raise ValueError(f"step {idx} must reference operation_key")
+        op = by_key.get(step["operation_key"])
+        if op is None:
+            raise ValueError(f"step {idx} references an unknown operation key")
+        query = step.get("query", {})
+        body = step.get("body", None)
+        if not isinstance(query, dict):
+            raise ValueError(f"step {idx} query must be an object")
+        query_params = {p["name"]: p for p in op["parameters"] if p["in"] == "query"}
+        undeclared = sorted(k for k in query if k not in query_params)
+        if undeclared:
+            allowed = sorted(query_params)
+            raise ValueError(
+                f"step {idx} has undeclared query parameter(s) {undeclared}; "
+                f"allowed query parameter names for {op['operation_id']} are {allowed}; "
+                "use query={} when the allowed list is empty"
+            )
+        for name, p in query_params.items():
+            if p["required"] and name not in query:
+                raise ValueError(f"step {idx} is missing required query parameter {name}")
+            if name in query and not matches_type(query[name], p.get("schema", {})):
+                raise ValueError(f"step {idx} query parameter {name} has wrong type")
+        body_schema = op.get("request_body_schema")
+        if body is not None and body_schema is None:
+            raise ValueError(f"step {idx} provided a body for an operation without JSON requestBody")
+        if body_schema is not None and body is None:
+            raise ValueError(f"step {idx} must provide a non-null JSON body because the operation declares a request_body_schema")
+        if op.get("request_body_required") and body is None:
+            raise ValueError(f"step {idx} is missing its required JSON request body")
+        if body is not None:
+            validate_body(body, body_schema or {}, f"step {idx} body")
+        if op["operation_id"].lower() == "signup" and isinstance(body, dict) and expected_signup_fixture:
+            for field, expected in expected_signup_fixture.items():
+                if field in body and body[field] != expected:
+                    raise ValueError(f"step {idx} body.{field} must use this candidate's fresh run-specific signup fixture")
+        steps.append({
+            "operation_key": op["key"],
+            "operation_id": op["operation_id"],
+            "method": op["method"],
+            "path": op["path"],
+            "query": query,
+            "body": body,
+        })
+
+    signup_steps = [x for x in steps if x["operation_id"].lower() == "signup" and isinstance(x["body"], dict)]
+    login_steps = [x for x in steps if x["operation_id"].lower() == "login" and isinstance(x["body"], dict)]
+    if signup_steps and login_steps:
+        signup_body = signup_steps[0]["body"]
+        login_body = login_steps[0]["body"]
+        for field in ("email", "password"):
+            if field in signup_body and field in login_body and signup_body[field] != login_body[field]:
+                raise ValueError(f"login body.{field} must match signup body.{field} in the same sequence")
+
+    return {
+        "sequence_id": str(seq.get("sequence_id") or f"draft-{sequence_index}"),
+        "steps": steps,
+        "rationale": str(seq.get("rationale", ""))[:500],
+    }
+
+
+def serialize_replay(sequence: dict[str, Any], host: str, bearer_token: str | None) -> str:
+    lines: list[str] = []
+    for step in sequence["steps"]:
+        path = step["path"]
+        query = step["query"]
+        if query:
+            path += "?" + urlencode(query, doseq=True)
+        if not path.startswith("/") or "\r" in path or "\n" in path or ".." in path:
+            raise ValueError("unsafe path generated after validation")
+        body = step["body"]
+        headers = ["Accept: application/json", f"Host: {host}"]
+        if bearer_token:
+            headers.append(f"Authorization: Bearer {bearer_token}")
+        if body is not None:
+            headers.append("Content-Type: application/json")
+        request_line = f"{step['method']} {path} HTTP/1.1"
+        request = request_line + "\\r\\n" + "\\r\\n".join(headers) + "\\r\\n\\r\\n"
+        if body is not None:
+            request += json.dumps(body, separators=(",", ":"), ensure_ascii=True)
+        lines.append("-> " + request)
+        lines.append("! producer_timing_delay 0")
+        lines.append("! max_async_wait_time 0")
+    return "\n".join(lines) + "\n"
+
+
+def scrub_token(directory: Path, token: str | None) -> None:
+    if not token:
+        return
+    for path in directory.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in {".txt", ".json", ".ndjson", ".log"}:
+            continue
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            if token in content:
+                path.write_text(content.replace(token, "[REDACTED_BEARER_TOKEN]"), encoding="utf-8")
+                try: path.chmod(0o600)
+                except OSError: pass
+        except OSError:
+            pass
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--spec", default="crapi-openapi.json")
+    ap.add_argument("--restler-dll", default="~/Documents/restler_bin/restler/Restler.dll")
+    ap.add_argument("--dictionary", default="/tmp/llm-restler-bench/Compile/dict.json")
+    ap.add_argument("--settings", default="/tmp/llm-restler-bench/Compile/engine_settings.json")
+    ap.add_argument("--output-root", default="artifacts/llm_sequence_experiment")
+    ap.add_argument("--target-ip", default="127.0.0.1")
+    ap.add_argument("--target-port", type=int, default=8888)
+    ap.add_argument("--host", default="localhost:8888")
+    ap.add_argument("--ollama-url", default="http://localhost:11434")
+    ap.add_argument("--small-model", default="qwen2.5:3b")
+    ap.add_argument("--large-model", default="qwen2.5:7b")
+    ap.add_argument("--total-budget-seconds", type=int, default=300)
+    ap.add_argument("--max-operations", type=int, default=55)
+    ap.add_argument("--max-approved-sequences", type=int, default=2)
+    ap.add_argument("--timeout-per-model", type=float, default=50.0)
+    ap.add_argument("--max-repair-attempts", type=int, default=2,
+                    help="Maximum Qwen 3B schema-repair rounds for invalid drafts (0 disables repair)")
+    ap.add_argument("--bearer-token-env", default="CRAPI_BEARER_TOKEN")
+    ap.add_argument("--exclude-path", action="append", default=[])
+    args = ap.parse_args()
+
+    if "\r" in args.host or "\n" in args.host or not args.host or len(args.host) > 255:
+        print("ERROR: invalid Host header", file=sys.stderr)
+        return 2
+    if args.target_ip not in {"127.0.0.1", "localhost", "::1"}:
+        print("ERROR: refusing non-loopback target; this runner is restricted to local crAPI", file=sys.stderr)
+        return 2
+    spec_path = (ROOT / args.spec).resolve() if not Path(args.spec).expanduser().is_absolute() else Path(args.spec).expanduser().resolve()
+    dll = Path(args.restler_dll).expanduser().resolve()
+    dictionary = Path(args.dictionary).expanduser().resolve()
+    settings_path = Path(args.settings).expanduser().resolve()
+    for label, file_path in (("OpenAPI spec", spec_path), ("RESTler DLL", dll), ("dictionary", dictionary), ("settings", settings_path)):
+        if not file_path.is_file():
+            print(f"ERROR: {label} not found: {file_path}", file=sys.stderr)
+            return 2
+    if args.total_budget_seconds < 90 or args.max_approved_sequences < 1 or args.max_repair_attempts < 0:
+        print("ERROR: total budget must be >=90s, max approved sequences >=1, and max repair attempts >=0", file=sys.stderr)
+        return 2
+    try:
+        with spec_path.open(encoding="utf-8") as f:
+            spec = json.load(f)
+        settings_base = json.loads(settings_path.read_text(encoding="utf-8"))
+        if not isinstance(settings_base, dict):
+            raise ValueError("settings JSON must be an object")
+        catalog = build_catalog(spec, args.max_operations, SKIP_PATHS | {p.strip("/") for p in args.exclude_path})
+    except Exception as exc:
+        print(f"ERROR preparing inputs: {type(exc).__name__}: {str(exc)[:220]}", file=sys.stderr)
+        return 2
+    try:
+        with socket.create_connection((args.target_ip, args.target_port), timeout=3):
+            pass
+    except OSError:
+        print(f"ERROR: crAPI is not reachable at {args.target_ip}:{args.target_port}", file=sys.stderr)
+        return 2
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_dir = (ROOT / args.output_root).resolve() / f"run-{timestamp}"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    started = time.monotonic()
+    provider = OllamaProvider(args.ollama_url)
+    model_catalog = [{k: op[k] for k in ("key", "operation_id", "method", "path", "summary", "parameters", "query_parameters", "required_query_parameters", "request_body_required", "request_body_schema")} for op in catalog]
+    by_key = {op["key"]: op for op in catalog}
+    # Each candidate gets a different signup identity so repeated runs do not collide on a fixed phone/email.
+    signup_fixtures = {i: make_signup_fixture() for i in range(1, 7)}
+    fixture_prompt = json.dumps([
+        {"sequence_id": f"draft-{i}", "signup_identity": signup_fixtures[i]}
+        for i in range(1, 4)
+    ], separators=(",", ":"))
+    report: dict[str, Any] = {
+        "run_id": run_dir.name,
+        "target": f"http://{args.target_ip}:{args.target_port}",
+        "spec": str(spec_path),
+        "models": {"draft": args.small_model, "verify": args.large_model},
+        "candidate_operation_count": len(catalog),
+        "excluded_path_parameter_operations": True,
+        "budget_seconds": args.total_budget_seconds,
+        "baseline_reference": "Compare against the existing 5-minute RESTler fuzz-lean baseline; replay explores fixed sequences and is not equivalent to fuzz-lean exploration.",
+        "query_validation_policy": "Every operation exposes explicit query_parameters and required_query_parameters; undeclared names are rejected with operation-specific allow-list errors.",
+        "draft_latency_seconds": None,
+        "repair_latency_seconds": 0.0,
+        "repair_calls": [],
+        "draft_validation": None,
+        "verify_latency_seconds": None,
+        "approved_sequences": [],
+        "runs": [],
+    }
+    token = os.getenv(args.bearer_token_env) or None
+    if token and (not re.fullmatch(r"[A-Za-z0-9._~+/=-]+", token) or len(token) > 8192):
+        print("ERROR: bearer token env var contains unsupported characters", file=sys.stderr)
+        return 2
+    remaining = lambda: args.total_budget_seconds - (time.monotonic() - started)
+    try:
+        draft_prompt = (
+            "TASK: Draft exactly 3 ordered API test sequences for the controlled LOCAL OWASP crAPI instance.\n"
+            "OUTPUT CONTRACT (mandatory): Return one raw JSON object, no Markdown or code fences, with key 'sequences'. "
+            "Return exactly three sequence objects in order, with sequence_id values draft-1, draft-2, draft-3. "
+            "Each sequence object has sequence_id (string), steps (array of 2-5 steps), and rationale (string). "
+            "Each step has exactly operation_key (a key copied from the catalog), query (JSON object), and body (JSON value or null).\n"
+            "BODY RULES (critical): Inspect the selected operation's request_body_schema in the catalog. "
+            "If request_body_schema is non-null, body MUST be a concrete, non-null JSON value matching that schema. "
+            "Do not output body:null for any operation with a request_body_schema. "
+            "Use null only when request_body_schema itself is null. "
+            "Include all required body properties, correct JSON types, enum values, constraints, and no forbidden extra properties.\n"
+            "QUERY RULES (critical): Every catalog operation includes query_parameters and required_query_parameters. "
+            "For each step, query may contain ONLY names listed in that operation's query_parameters; include all names in required_query_parameters. "
+            "If query_parameters is [], query MUST be {}. Do not copy JSON body fields, headers, operation keys, or path segments into query. "
+            "Do not invent any query parameter names.\n"
+            "SIGNUP FIXTURES: If a sequence uses operation_id signup, copy the email, number, and password for that draft exactly from the matching fixture below. "
+            "If the same sequence also uses login, use exactly the same email and password in its login body. Do not reuse a fixture across draft IDs.\n"
+            "Before responding, internally check each step against its own operation schema and check every signup/login credential pair. "
+            "This prototype excludes path-parameter routes; do not invent path IDs, external URLs, shell strings, or credential-bearing headers.\n\n"
+            "Run-specific signup fixtures (values are test-only):\n" + fixture_prompt +
+            "\n\nOpenAPI operation catalog (authoritative schema and operation keys):\n" + json.dumps(model_catalog, separators=(",", ":"))
+        )
+        print(f"Operations available to the models: {len(catalog)}", flush=True)
+        print(f"Stage 1/2: {args.small_model} drafts sequences...", flush=True)
+        draft_response = provider.generate(
+            model=args.small_model,
+            system="You are an API test-sequence drafter. Follow the JSON contract exactly. All endpoints are local test endpoints.",
+            prompt=draft_prompt,
+            max_output_tokens=2600,
+            timeout_seconds=min(args.timeout_per_model, max(10, remaining() - 30)),
+            temperature=0.35,
+            seed=41,
+            context_tokens=16000,
+        )
+        report["draft_latency_seconds"] = round(draft_response.latency_seconds, 3)
+        draft_obj = parse_json_response(draft_response.text)
+        raw_sequences = draft_obj.get("sequences")
+        if not isinstance(raw_sequences, list) or not raw_sequences:
+            raise ValueError("3B model returned no sequences")
+
+        # Assign stable unique IDs so repaired candidates can be matched unambiguously.
+        candidates: list[dict[str, Any]] = []
+        used_ids: set[str] = set()
+        for i, raw in enumerate(raw_sequences[:6], 1):
+            proposed = raw.get("sequence_id") if isinstance(raw, dict) else None
+            sid = proposed.strip()[:80] if isinstance(proposed, str) and proposed.strip() else f"draft-{i}"
+            if sid in used_ids:
+                sid = f"draft-{i}"
+            suffix = 1
+            base_sid = sid
+            while sid in used_ids:
+                sid = f"{base_sid}-{suffix}"
+                suffix += 1
+            used_ids.add(sid)
+            if isinstance(raw, dict):
+                candidate = dict(raw)
+                candidate["sequence_id"] = sid
+            else:
+                candidate = raw
+            candidates.append({
+                "index": i,
+                "sequence_id": sid,
+                "candidate": candidate,
+                "first_pass_valid": False,
+                "first_pass_errors": [],
+                "repair_attempts": 0,
+                "repair_issues": [],
+                "final_valid": False,
+                "final_errors": [],
+            })
+
+        valid_entries: list[tuple[int, dict[str, Any]]] = []
+        pending: list[dict[str, Any]] = []
+        for record in candidates:
+            try:
+                validated = validate_sequence(record["candidate"], by_key, record["index"], signup_fixtures.get(record["index"]))
+                record["first_pass_valid"] = True
+                record["final_valid"] = True
+                record["final_errors"] = []
+                valid_entries.append((record["index"], validated))
+            except Exception as exc:
+                err = f"{type(exc).__name__}: {str(exc)[:220]}"
+                record["first_pass_errors"] = [err]
+                record["final_errors"] = [err]
+                pending.append(record)
+
+        first_pass_valid_count = len(valid_entries)
+        print(
+            f"3B produced {len(candidates)} draft(s); {first_pass_valid_count} passed first-pass schema/path validation",
+            flush=True,
+        )
+
+        repair_call_records: list[dict[str, Any]] = []
+        for attempt in range(1, args.max_repair_attempts + 1):
+            if not pending:
+                break
+            if remaining() <= 6:
+                print("Repair stopped because the time budget is nearly exhausted.", flush=True)
+                break
+
+            repair_items = [
+                {
+                    "sequence_id": rec["sequence_id"],
+                    "validation_errors": rec["final_errors"],
+                    "candidate": rec["candidate"],
+                    "run_specific_signup_fixture": signup_fixtures.get(rec["index"], {}),
+                    "step_query_constraints": query_constraints_for_candidate(rec["candidate"], by_key),
+                }
+                for rec in pending
+            ]
+            repair_prompt = (
+                f"Repair these invalid API test sequences. This is repair round {attempt} of {args.max_repair_attempts}.\n"
+                "Return ONLY a JSON object with a 'sequences' array containing one corrected sequence for EVERY supplied sequence_id.\n"
+                "Preserve each sequence_id. Preserve its operation order and operation_key values unless a listed validation error makes that impossible.\n"
+                "Do not remove steps to evade errors. Each step must have operation_key, query object, and body. Set body=null ONLY when request_body_schema is null.\n"
+                "For non-null request_body_schema, provide a non-null body matching declared types, enums, length/range/pattern constraints, required properties and additionalProperties rules.\n"
+                "QUERY REPAIR RULE (mandatory): For every step, obey that step's step_query_constraints. The query object may contain ONLY allowed_query_parameters and must include all required_query_parameters. "
+                "If allowed_query_parameters is [], set query to {} exactly. Never copy JSON body properties, headers, operation IDs, or operation keys into query.\n"
+                "Use only catalog operation keys and declared query parameter names. Do not add fields that violate additionalProperties=false.\n"
+                "If a sequence uses signup, copy its candidate's run_specific_signup_fixture email, number, and password exactly. "
+                "If it also uses login, make login email/password exactly match signup email/password.\n"
+                "Never use body:null when request_body_schema is non-null. Return corrected full bodies, not patches or partial objects. "
+                "Fix the listed validation errors, and do not provide explanations outside JSON.\n\n"
+                "Operation catalog (query_parameters is the authoritative query allow-list for each operation):\n" + json.dumps(model_catalog, separators=(",", ":")) +
+                "\nInvalid candidates, exact per-step query constraints, and validator errors:\n" + json.dumps(repair_items, separators=(",", ":"))
+            )
+            print(
+                f"Repair round {attempt}/{args.max_repair_attempts}: asking {args.small_model} to fix {len(pending)} invalid draft(s)...",
+                flush=True,
+            )
+            try:
+                timeout_left = max(1.0, min(args.timeout_per_model, remaining() - 5.0))
+                repair_response = provider.generate(
+                    model=args.small_model,
+                    system=(
+                        "You repair API test sequences. Output valid JSON only. "
+                        "Treat the OpenAPI operation catalog and deterministic validator errors as authoritative. "
+                        "Never invent operation keys, paths, parameter names, or schema fields."
+                    ),
+                    prompt=repair_prompt,
+                    max_output_tokens=3000,
+                    timeout_seconds=timeout_left,
+                    temperature=0.1,
+                    seed=50 + attempt,
+                    context_tokens=16000,
+                )
+                call_info: dict[str, Any] = {
+                    "attempt": attempt,
+                    "candidate_count": len(pending),
+                    "latency_seconds": round(repair_response.latency_seconds, 3),
+                    "parse_status": "pending",
+                }
+                report["repair_latency_seconds"] = round(
+                    float(report.get("repair_latency_seconds", 0.0)) + repair_response.latency_seconds, 3
+                )
+            except Exception as exc:
+                call_info = {
+                    "attempt": attempt,
+                    "candidate_count": len(pending),
+                    "parse_status": "generation_error",
+                    "error": f"{type(exc).__name__}: {str(exc)[:180]}",
+                }
+                for rec in pending:
+                    rec["repair_attempts"] = attempt
+                    rec["repair_issues"].append(call_info["error"])
+                repair_call_records.append(call_info)
+                report["repair_calls"] = repair_call_records
+                continue
+
+            try:
+                repair_obj = parse_json_response(repair_response.text)
+                repair_sequences = repair_obj.get("sequences")
+                if not isinstance(repair_sequences, list):
+                    raise ValueError("repair output omitted a sequences array")
+                repaired_by_id: dict[str, dict[str, Any]] = {}
+                allowed_ids = {rec["sequence_id"] for rec in pending}
+                for item in repair_sequences:
+                    if not isinstance(item, dict):
+                        continue
+                    sid = item.get("sequence_id")
+                    if isinstance(sid, str) and sid in allowed_ids and sid not in repaired_by_id:
+                        repaired_by_id[sid] = item
+                call_info["parse_status"] = "ok"
+                call_info["returned_candidate_count"] = len(repaired_by_id)
+            except Exception as exc:
+                call_info["parse_status"] = "parse_error"
+                call_info["error"] = f"{type(exc).__name__}: {str(exc)[:180]}"
+                for rec in pending:
+                    rec["repair_attempts"] = attempt
+                    rec["repair_issues"].append(call_info["error"])
+                repair_call_records.append(call_info)
+                report["repair_calls"] = repair_call_records
+                continue
+
+            next_pending: list[dict[str, Any]] = []
+            for rec in pending:
+                rec["repair_attempts"] = attempt
+                revised = repaired_by_id.get(rec["sequence_id"])
+                if revised is None:
+                    issue = f"repair round {attempt} did not return this sequence_id"
+                    rec["repair_issues"].append(issue)
+                    rec["final_errors"] = rec["first_pass_errors"] or rec["final_errors"] or [issue]
+                    next_pending.append(rec)
+                    continue
+
+                revised = dict(revised)
+                revised["sequence_id"] = rec["sequence_id"]
+                rec["candidate"] = revised
+                try:
+                    validated = validate_sequence(revised, by_key, rec["index"], signup_fixtures.get(rec["index"]))
+                    rec["final_valid"] = True
+                    rec["final_errors"] = []
+                    valid_entries.append((rec["index"], validated))
+                except Exception as exc:
+                    err = f"{type(exc).__name__}: {str(exc)[:220]}"
+                    rec["final_valid"] = False
+                    rec["final_errors"] = [err]
+                    next_pending.append(rec)
+            pending = next_pending
+            repair_call_records.append(call_info)
+            report["repair_calls"] = repair_call_records
+            print(
+                f"Repair round {attempt}: {len(valid_entries) - first_pass_valid_count} formerly invalid draft(s) repaired successfully; {len(pending)} still invalid",
+                flush=True,
+            )
+
+        valid_entries.sort(key=lambda pair: pair[0])
+        valid_drafts = [sequence for _, sequence in valid_entries]
+        evaluation_by_id = {rec["sequence_id"]: rec for rec in candidates}
+        report["draft_validation"] = {
+            "draft_count": len(candidates),
+            "first_pass_valid_count": first_pass_valid_count,
+            "first_pass_invalid_count": len(candidates) - first_pass_valid_count,
+            "repair_attempt_limit": args.max_repair_attempts,
+            "repair_calls_made": len(repair_call_records),
+            "repaired_valid_count": sum(1 for rec in candidates if not rec["first_pass_valid"] and rec["final_valid"]),
+            "post_repair_valid_count": len(valid_drafts),
+            "still_invalid_count": sum(1 for rec in candidates if not rec["final_valid"]),
+            "candidates": [
+                {
+                    "sequence_id": rec["sequence_id"],
+                    "first_pass_valid": rec["first_pass_valid"],
+                    "first_pass_errors": rec["first_pass_errors"],
+                    "repair_attempts": rec["repair_attempts"],
+                    "repair_issues": rec["repair_issues"],
+                    "post_repair_valid": rec["final_valid"],
+                    "final_errors": rec["final_errors"],
+                }
+                for rec in candidates
+            ],
+        }
+        report["draft_validation_rejections"] = [
+            f"{rec['sequence_id']}: {err}" for rec in candidates for err in rec["first_pass_errors"]
+        ]
+        report["drafts_considered"] = [
+            {
+                "sequence_id": sequence["sequence_id"],
+                "step_count": len(sequence["steps"]),
+                "operation_ids": [step["operation_id"] for step in sequence["steps"]],
+                "first_pass_valid": evaluation_by_id.get(sequence["sequence_id"], {}).get("first_pass_valid", False),
+                "repair_attempts": evaluation_by_id.get(sequence["sequence_id"], {}).get("repair_attempts", 0),
+            }
+            for sequence in valid_drafts
+        ]
+        print(
+            f"After repair: {len(valid_drafts)}/{len(candidates)} draft(s) passed schema/path validation",
+            flush=True,
+        )
+        if not valid_drafts:
+            details = "; ".join(
+                f"{rec['sequence_id']}: {', '.join(rec['final_errors'][:2])}" for rec in candidates if rec['final_errors']
+            )
+            raise ValueError("no drafts passed deterministic validation after repair: " + details[:500])
+
+        verify_payload = [
+            {"sequence_id": s["sequence_id"], "steps": [
+                {"operation_key": x["operation_key"], "operation_id": x["operation_id"], "method": x["method"], "path": x["path"], "query": x["query"], "body": x["body"]}
+                for x in s["steps"]
+            ], "rationale": s["rationale"]}
+            for s in valid_drafts
+        ]
+        verify_prompt = (
+            "Verify the candidate API sequences for a controlled local crAPI experiment. The deterministic validator has already checked paths, methods, query names/types, and required body properties. "
+            "Assess sequence coherence, whether later calls plausibly build on earlier calls, and useful test value. Select only sequence IDs from the supplied list; do not modify steps or invent new IDs. "
+            "Return JSON only: {\"approved_sequence_ids\":[\"draft-1\"],\"rejections\":[{\"sequence_id\":\"draft-2\",\"reason\":\"...\"}]}\n\n"
+            "Operation catalog:\n" + json.dumps(model_catalog, separators=(",", ":")) +
+            "\nCandidate sequences:\n" + json.dumps(verify_payload, separators=(",", ":"))
+        )
+        print(f"Stage 2/2: {args.large_model} verifies/ranks valid drafts...", flush=True)
+        verify_response = provider.generate(
+            model=args.large_model,
+            system="You are a conservative API test-sequence reviewer. Select only valid supplied sequence IDs and return the requested JSON.",
+            prompt=verify_prompt,
+            max_output_tokens=1000,
+            timeout_seconds=min(args.timeout_per_model, max(10, remaining() - 20)),
+            temperature=0.1,
+            seed=42,
+            context_tokens=16000,
+        )
+        report["verify_latency_seconds"] = round(verify_response.latency_seconds, 3)
+        verify_obj = parse_json_response(verify_response.text)
+        approved_ids = verify_obj.get("approved_sequence_ids")
+        if not isinstance(approved_ids, list):
+            raise ValueError("7B output omitted approved_sequence_ids")
+        drafts_by_id = {s["sequence_id"]: s for s in valid_drafts}
+        approved = []
+        for sid in approved_ids:
+            if isinstance(sid, str) and sid in drafts_by_id and sid not in {s["sequence_id"] for s in approved}:
+                approved.append(drafts_by_id[sid])
+            if len(approved) >= args.max_approved_sequences:
+                break
+        if not approved:
+            raise ValueError("7B verifier approved no valid draft sequence")
+        report["verifier_rejections"] = [
+            {"sequence_id": x.get("sequence_id"), "reason": str(x.get("reason", ""))[:240]}
+            for x in verify_obj.get("rejections", []) if isinstance(x, dict)
+        ] if isinstance(verify_obj.get("rejections", []), list) else []
+        report["approved_sequences"] = [
+            {
+                "sequence_id": s["sequence_id"],
+                "step_count": len(s["steps"]),
+                "operation_ids": [x["operation_id"] for x in s["steps"]],
+                "rationale": s["rationale"],
+                "first_pass_valid": evaluation_by_id.get(s["sequence_id"], {}).get("first_pass_valid", False),
+                "repair_attempts": evaluation_by_id.get(s["sequence_id"], {}).get("repair_attempts", 0),
+            }
+            for s in approved
+        ]
+        print(f"7B approved {len(approved)} sequence(s)", flush=True)
+
+        for index, sequence in enumerate(approved, 1):
+            time_left = remaining()
+            if time_left < 10:
+                report["runs"].append({"sequence_id": sequence["sequence_id"], "status": "skipped_budget_exhausted"})
+                continue
+            seq_slug = re.sub(r"[^A-Za-z0-9_.-]", "_", sequence["sequence_id"])
+            seq_dir = run_dir / f"sequence-{index}-{seq_slug}"
+            seq_dir.mkdir()
+            replay_file = seq_dir / "sequence.replay.txt"
+            replay_file.write_text(serialize_replay(sequence, args.host, token), encoding="utf-8")
+            replay_file.chmod(0o600)
+            settings = dict(settings_base)
+            settings["target_ip"] = args.target_ip
+            settings["target_port"] = args.target_port
+            settings_file = seq_dir / "settings.json"
+            settings_file.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+            cmd = [
+                "dotnet", str(dll), "--disable_log_upload", "replay",
+                "--replay_log", str(replay_file),
+                "--dictionary_file", str(dictionary),
+                "--settings", str(settings_file),
+                "--no_ssl", "--host", args.host,
+            ]
+            if token:
+                # RESTler's replay help documents this option; value is an executable command, not a token.
+                refresh_command = os.getenv("CRAPI_TOKEN_REFRESH_COMMAND")
+                if refresh_command:
+                    cmd += ["--token_refresh_command", refresh_command]
+            log_file = seq_dir / "restler_stdout.txt"
+            print(f"Executing sequence {index}/{len(approved)} ({len(sequence['steps'])} requests) via RESTler replay...", flush=True)
+            t0 = time.monotonic()
+            try:
+                with log_file.open("w", encoding="utf-8") as log:
+                    proc = subprocess.run(cmd, cwd=seq_dir, stdout=log, stderr=subprocess.STDOUT,
+                                          timeout=max(5, int(remaining())), check=False, text=True)
+                rc = proc.returncode
+                status = "completed" if rc == 0 else "restler_nonzero_exit"
+            except subprocess.TimeoutExpired:
+                rc = 124
+                status = "timeout_budget"
+            elapsed = time.monotonic() - t0
+            log_text = log_file.read_text(encoding="utf-8", errors="replace") if log_file.exists() else ""
+            summary_lines = [line.strip() for line in log_text.splitlines() if any(k in line for k in ("Replay", "requests", "Request", "ERROR", "error", "exception", "Exception"))][-30:]
+            if token:
+                summary_lines = [line.replace(token, "[REDACTED_BEARER_TOKEN]") for line in summary_lines]
+            test_values = []
+            for step in sequence["steps"]:
+                body = step.get("body")
+                if isinstance(body, dict):
+                    for key, value in body.items():
+                        if key.lower() in {"email", "password", "number", "phone", "phone_number", "mobile", "mobile_number"} and isinstance(value, str):
+                            test_values.append(value)
+            for value in sorted(set(test_values), key=len, reverse=True):
+                summary_lines = [line.replace(value, "[REDACTED_TEST_VALUE]") for line in summary_lines]
+            http_responses = parse_network_responses(seq_dir)
+            http_status_counts: dict[str, int] = {}
+            for response in http_responses:
+                if response.get("status_code") is not None:
+                    key = str(response["status_code"])
+                    http_status_counts[key] = http_status_counts.get(key, 0) + 1
+            print("Observed HTTP statuses: " + (", ".join(str(x["status_code"]) for x in http_responses if x.get("status_code") is not None) or "none found"), flush=True)
+            # Do not leave synthetic account credentials in raw RESTler logs/replay files.
+            scrub_test_values(seq_dir, test_values)
+            report["runs"].append({
+                "sequence_id": sequence["sequence_id"],
+                "status": status,
+                "restler_exit_code": rc,
+                "elapsed_seconds": round(elapsed, 3),
+                "request_count": len(sequence["steps"]),
+                "http_responses": http_responses,
+                "http_status_counts": http_status_counts,
+                "steps": [{"method": s["method"], "path": s["path"], "operation_id": s["operation_id"]} for s in sequence["steps"]],
+                "log_file": str(log_file),
+                "summary_lines": summary_lines,
+            })
+            # Input replay files may contain test payloads and an optional bearer token.
+            if token:
+                try: replay_file.unlink()
+                except OSError: pass
+                scrub_token(seq_dir, token)
+        report["total_elapsed_seconds"] = round(time.monotonic() - started, 3)
+        report["remaining_budget_seconds"] = round(max(0, remaining()), 3)
+        report["auth_token_supplied"] = bool(token)
+        report["interpretation_note"] = (
+            "The small model drafts full request sequences; invalid drafts may receive bounded small-model repair attempts. "
+            "No request bodies are silently synthesized. First-pass and post-repair contract-validation rates are reported separately. "
+            "Signup candidates receive per-candidate unique synthetic email/phone/password fixtures; fixture values are redacted from replay artifacts. "
+            "This experiment uses model-drafted fixed replay sequences. OpenAPI paths requiring path parameters are excluded, "
+            "so this is not yet a response-dependent stateful sequence engine. RESTler replay does not explore like fuzz-lean. "
+            "HTTP 5xx/checker buckets are leads and require replay/triage before being called vulnerabilities."
+        )
+        (run_dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print("\nExperiment finished.")
+        print(f"Total elapsed: {report['total_elapsed_seconds']}s / budget {args.total_budget_seconds}s")
+        for item in report["runs"]:
+            print(f"  {item['sequence_id']}: {item['status']} (exit={item.get('restler_exit_code', 'n/a')})")
+        print(f"Report: {run_dir / 'report.json'}")
+        print(f"Artifacts: {run_dir}")
+        return 0 if all(x.get("restler_exit_code", 0) == 0 for x in report["runs"] if x.get("status") != "skipped_budget_exhausted") else 1
+    except Exception as exc:
+        report["error"] = f"{type(exc).__name__}: {str(exc)[:250]}"
+        report["total_elapsed_seconds"] = round(time.monotonic() - started, 3)
+        (run_dir / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        scrub_token(run_dir, token)
+        print(f"ERROR: {report['error']}", file=sys.stderr)
+        print(f"Partial report: {run_dir / 'report.json'}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
